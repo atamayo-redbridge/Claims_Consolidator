@@ -142,6 +142,44 @@ def safe_key(value: str) -> str:
     )
 
 
+def calculate_group_analysis(
+    group_number: str,
+    alternative_deductible=None,
+    replace_lasers: bool = False,
+) -> pd.DataFrame:
+    """
+    Analyze one Group Number independently using its own contract.
+    """
+    package = st.session_state.group_packages[group_number]
+
+    if package["status"] != "ready":
+        raise ValueError(package["error"])
+
+    contract = package["contract"]
+    group_raw = package["raw_claims"]
+
+    covered = set(contract.get("covered_benefits", []))
+
+    filtered_raw = group_raw[
+        group_raw["Benefit"].isin(covered)
+    ].copy()
+
+    if filtered_raw.empty:
+        raise ValueError(
+            f"None of the uploaded claims for Group {group_number} "
+            "belong to a covered benefit."
+        )
+
+    filtered_consolidated = consolidate_claims(filtered_raw)
+
+    return apply_contract_rules(
+        filtered_consolidated,
+        contract,
+        alternative_deductible=alternative_deductible,
+        replace_lasers=replace_lasers,
+    )
+
+
 # ---------------------------------------------------------
 # SESSION STATE
 # ---------------------------------------------------------
@@ -310,6 +348,104 @@ if packages:
         f"{len(packages):,} group(s) detected. "
         f"{ready_count:,} contract(s) ready for analysis."
     )
+
+    ready_groups = [
+        group_number
+        for group_number, package in packages.items()
+        if package["status"] == "ready"
+    ]
+
+    company_groups = {}
+
+    for group_number in ready_groups:
+        company_name = packages[group_number]["contract"]["company"]
+        company_groups.setdefault(company_name, []).append(group_number)
+
+    st.subheader("Analyze by Company")
+
+    st.caption(
+        "Choose one, several, or all Group Numbers for each company. "
+        "Each group is analyzed independently and keeps its own Excel report."
+    )
+
+    for company_name, company_group_numbers in company_groups.items():
+
+        company_key = safe_key(company_name)
+
+        with st.container(border=True):
+
+            st.markdown(f"### {company_name}")
+
+            selected_groups = st.multiselect(
+                "Group Numbers to analyze",
+                options=company_group_numbers,
+                default=company_group_numbers,
+                key=f"selected_groups_{company_key}",
+            )
+
+            batch_col1, batch_col2, batch_space = st.columns(
+                [1.5, 1.25, 3.25]
+            )
+
+            with batch_col1:
+                analyze_selected = st.button(
+                    "Analyze Selected Groups",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not selected_groups,
+                    key=f"analyze_selected_{company_key}",
+                )
+
+            with batch_col2:
+                analyze_all = st.button(
+                    f"Analyze All {len(company_group_numbers)} Groups",
+                    use_container_width=True,
+                    key=f"analyze_all_{company_key}",
+                )
+
+            if analyze_selected or analyze_all:
+
+                groups_to_run = (
+                    company_group_numbers
+                    if analyze_all
+                    else selected_groups
+                )
+
+                completed = 0
+                errors = []
+
+                with st.spinner(
+                    f"Analyzing {len(groups_to_run)} group(s) "
+                    f"for {company_name}..."
+                ):
+                    for selected_group in groups_to_run:
+                        try:
+                            st.session_state.group_analyses[
+                                selected_group
+                            ] = calculate_group_analysis(
+                                selected_group
+                            )
+                            completed += 1
+                        except Exception as exc:
+                            st.session_state.group_analyses.pop(
+                                selected_group,
+                                None,
+                            )
+                            errors.append(
+                                f"Group {selected_group}: {exc}"
+                            )
+
+                if completed:
+                    st.success(
+                        f"{completed} group(s) analyzed successfully "
+                        f"for {company_name}."
+                    )
+
+                for error_message in errors:
+                    st.error(error_message)
+
+    st.divider()
+    st.subheader("Group Details and Separate Reports")
 
     for group_number, package in packages.items():
 
@@ -510,7 +646,7 @@ if packages:
                 )
 
                 run_final = st.button(
-                    f"Run Analysis for {contract['company']}",
+                    f"Run Analysis for Group {group_number}",
                     type="primary",
                     use_container_width=False,
                     key=f"run_{group_key}",
@@ -543,27 +679,8 @@ if packages:
                                 "cannot be negative."
                             )
 
-                    covered = set(
-                        contract.get("covered_benefits", [])
-                    )
-
-                    filtered_raw = group_raw[
-                        group_raw["Benefit"].isin(covered)
-                    ].copy()
-
-                    if filtered_raw.empty:
-                        raise ValueError(
-                            "None of the uploaded claims for this group "
-                            "belong to a covered benefit."
-                        )
-
-                    filtered_consolidated = consolidate_claims(
-                        filtered_raw
-                    )
-
-                    analysis = apply_contract_rules(
-                        filtered_consolidated,
-                        contract,
+                    analysis = calculate_group_analysis(
+                        group_number,
                         alternative_deductible=alternative,
                         replace_lasers=(
                             laser_mode
