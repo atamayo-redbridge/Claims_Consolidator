@@ -9,6 +9,14 @@ from claims_engine import apply_contract_rules, consolidate_claims
 from claims_reader import read_all_claim_files
 from contracts import get_contract
 from excel_report import build_excel_report
+from ui import (
+    apply_global_styles,
+    render_company_analysis_controls,
+    render_detection_status,
+    render_group_sections,
+    render_header,
+    render_upload_panel,
+)
 
 
 st.set_page_config(
@@ -17,65 +25,12 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-        .block-container {
-            max-width: 1180px;
-            padding-top: 2.5rem;
-            padding-bottom: 3rem;
-        }
-
-        .app-title {
-            text-align: center;
-            font-size: 2.35rem;
-            font-weight: 750;
-            margin-bottom: 0.35rem;
-        }
-
-        .app-subtitle {
-            text-align: center;
-            color: #6b7280;
-            font-size: 0.95rem;
-            margin-bottom: 1.8rem;
-        }
-
-        div.stButton,
-        div.stDownloadButton {
-            display: flex;
-            justify-content: center;
-        }
-
-        div.stButton > button,
-        div.stDownloadButton > button {
-            width: auto !important;
-            min-width: 180px;
-            padding-left: 1.5rem;
-            padding-right: 1.5rem;
-        }
-
-        [data-testid="stFileUploader"] {
-            max-width: 100%;
-        }
-
-        [data-testid="stMetric"] {
-            text-align: center;
-        }
-    </style>
-
-    <div class="app-title">Redbridge Large Claims Analyzer</div>
-    <div class="app-subtitle">
-        Upload claim workbooks, enter the policy year, consolidate claims by
-        Member ID, and calculate Redbridge liability independently for each
-        company and group.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+apply_global_styles()
+render_header()
 
 
 # ---------------------------------------------------------
-# HELPERS
+# DATA NORMALIZATION HELPERS
 # ---------------------------------------------------------
 
 BENEFIT_ALIASES = {
@@ -101,7 +56,7 @@ def normalize_benefit(value):
 
 
 def clean_group_number(value) -> str:
-    """Prevent group numbers read from Excel from appearing as 750109.0."""
+    """Prevent group numbers from appearing as 750109.0."""
     if pd.isna(value):
         return ""
 
@@ -114,10 +69,7 @@ def clean_group_number(value) -> str:
 
 
 def normalize_contract(contract: dict) -> dict:
-    """
-    Work with DENT internally, even when contracts.py still contains DENTAL.
-    This avoids changing the original contract dictionary in memory.
-    """
+    """Normalize contract group and benefit names."""
     normalized = deepcopy(contract)
 
     normalized["group_number"] = clean_group_number(
@@ -133,6 +85,7 @@ def normalize_contract(contract: dict) -> dict:
 
 
 def safe_key(value: str) -> str:
+    """Create a Streamlit-safe widget key."""
     return (
         str(value)
         .replace(" ", "_")
@@ -142,14 +95,30 @@ def safe_key(value: str) -> str:
     )
 
 
+# ---------------------------------------------------------
+# SESSION STATE
+# ---------------------------------------------------------
+
+if "raw_claims" not in st.session_state:
+    st.session_state.raw_claims = None
+
+if "group_packages" not in st.session_state:
+    st.session_state.group_packages = {}
+
+if "group_analyses" not in st.session_state:
+    st.session_state.group_analyses = {}
+
+
+# ---------------------------------------------------------
+# BUSINESS LOGIC
+# ---------------------------------------------------------
+
 def calculate_group_analysis(
     group_number: str,
     alternative_deductible=None,
     replace_lasers: bool = False,
 ) -> pd.DataFrame:
-    """
-    Analyze one Group Number independently using its own contract.
-    """
+    """Analyze one Group Number independently."""
     package = st.session_state.group_packages[group_number]
 
     if package["status"] != "ready":
@@ -157,7 +126,6 @@ def calculate_group_analysis(
 
     contract = package["contract"]
     group_raw = package["raw_claims"]
-
     covered = set(contract.get("covered_benefits", []))
 
     filtered_raw = group_raw[
@@ -180,670 +148,117 @@ def calculate_group_analysis(
     )
 
 
-# ---------------------------------------------------------
-# SESSION STATE
-# ---------------------------------------------------------
+def load_group_packages(uploaded_files, policy_year: str) -> None:
+    """Read files, normalize data, and prepare one package per group."""
+    year = policy_year.strip()
 
-if "raw_claims" not in st.session_state:
-    st.session_state.raw_claims = None
+    if not year.isdigit() or len(year) != 4:
+        raise ValueError("Enter a valid four-digit Policy Year.")
 
-if "group_packages" not in st.session_state:
-    st.session_state.group_packages = {}
+    if not uploaded_files:
+        raise ValueError("Upload at least one claim workbook.")
 
-if "group_analyses" not in st.session_state:
-    st.session_state.group_analyses = {}
+    raw_claims = read_all_claim_files(uploaded_files)
 
+    required_columns = {"Group Number", "Member ID", "Benefit"}
+    missing_columns = required_columns - set(raw_claims.columns)
 
-# ---------------------------------------------------------
-# FILE UPLOAD AND POLICY YEAR
-# ---------------------------------------------------------
-
-left_space, center_column, right_space = st.columns(
-    [1, 4, 1]
-)
-
-with center_column:
-
-    with st.container(border=True):
-
-        uploaded_files = st.file_uploader(
-            "Upload claim workbooks",
-            type=["xlsx", "xls"],
-            accept_multiple_files=True,
-            help="Each workbook must contain a sheet named 'data'.",
+    if missing_columns:
+        raise ValueError(
+            "The combined claim data is missing required columns: "
+            + ", ".join(sorted(missing_columns))
         )
 
-        year_left, year_center, year_right = st.columns(
-            [1, 2, 1]
+    raw_claims = raw_claims.copy()
+    raw_claims["Group Number"] = raw_claims[
+        "Group Number"
+    ].apply(clean_group_number)
+    raw_claims["Benefit"] = raw_claims[
+        "Benefit"
+    ].apply(normalize_benefit)
+
+    raw_claims = raw_claims[
+        raw_claims["Group Number"] != ""
+    ].copy()
+
+    if raw_claims.empty:
+        raise ValueError(
+            "No valid Group Number was found in the uploaded files."
         )
 
-        with year_center:
-            policy_year = st.text_input(
-                "Policy Year",
-                placeholder="Example: 2025",
-                max_chars=4,
+    group_numbers = sorted(
+        raw_claims["Group Number"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    packages = {}
+
+    for group_number in group_numbers:
+        group_raw = raw_claims[
+            raw_claims["Group Number"] == group_number
+        ].copy()
+
+        try:
+            contract = normalize_contract(
+                get_contract(group_number, year)
             )
+            consolidated = consolidate_claims(group_raw)
 
-        analyze_clicked = st.button(
-            "Analyze",
-            type="primary",
-            use_container_width=False,
-        )
+            packages[group_number] = {
+                "status": "ready",
+                "raw_claims": group_raw,
+                "consolidated": consolidated,
+                "contract": contract,
+                "error": None,
+            }
+        except Exception as group_exc:
+            packages[group_number] = {
+                "status": "error",
+                "raw_claims": group_raw,
+                "consolidated": None,
+                "contract": None,
+                "error": str(group_exc),
+            }
+
+    st.session_state.raw_claims = raw_claims
+    st.session_state.group_packages = packages
 
 
 # ---------------------------------------------------------
-# INITIAL ANALYSIS — MULTIPLE GROUPS
+# APPLICATION FLOW
 # ---------------------------------------------------------
+
+uploaded_files, policy_year, analyze_clicked = render_upload_panel()
 
 if analyze_clicked:
-
     st.session_state.raw_claims = None
     st.session_state.group_packages = {}
     st.session_state.group_analyses = {}
 
     try:
-
-        year = policy_year.strip()
-
-        if not year.isdigit() or len(year) != 4:
-            raise ValueError("Enter a valid four-digit Policy Year.")
-
-        if not uploaded_files:
-            raise ValueError("Upload at least one claim workbook.")
-
-        raw_claims = read_all_claim_files(uploaded_files)
-
-        required_columns = {"Group Number", "Member ID", "Benefit"}
-
-        missing_columns = required_columns - set(raw_claims.columns)
-
-        if missing_columns:
-            raise ValueError(
-                "The combined claim data is missing required columns: "
-                + ", ".join(sorted(missing_columns))
-            )
-
-        raw_claims = raw_claims.copy()
-
-        raw_claims["Group Number"] = raw_claims[
-            "Group Number"
-        ].apply(clean_group_number)
-
-        raw_claims["Benefit"] = raw_claims[
-            "Benefit"
-        ].apply(normalize_benefit)
-
-        raw_claims = raw_claims[
-            raw_claims["Group Number"] != ""
-        ].copy()
-
-        if raw_claims.empty:
-            raise ValueError(
-                "No valid Group Number was found in the uploaded files."
-            )
-
-        group_numbers = sorted(
-            raw_claims["Group Number"]
-            .dropna()
-            .astype(str)
-            .unique()
-            .tolist()
-        )
-
-        packages = {}
-
-        for group_number in group_numbers:
-
-            group_raw = raw_claims[
-                raw_claims["Group Number"] == group_number
-            ].copy()
-
-            try:
-                contract = normalize_contract(
-                    get_contract(group_number, year)
-                )
-
-                consolidated = consolidate_claims(group_raw)
-
-                packages[group_number] = {
-                    "status": "ready",
-                    "raw_claims": group_raw,
-                    "consolidated": consolidated,
-                    "contract": contract,
-                    "error": None,
-                }
-
-            except Exception as group_exc:
-
-                packages[group_number] = {
-                    "status": "error",
-                    "raw_claims": group_raw,
-                    "consolidated": None,
-                    "contract": None,
-                    "error": str(group_exc),
-                }
-
-        st.session_state.raw_claims = raw_claims
-        st.session_state.group_packages = packages
-
+        load_group_packages(uploaded_files, policy_year)
     except Exception as exc:
-
         st.error(str(exc))
-
-
-# ---------------------------------------------------------
-# RESULTS BY COMPANY / GROUP
-# ---------------------------------------------------------
 
 packages = st.session_state.group_packages
 
 if packages:
+    render_detection_status(packages)
 
-    ready_count = sum(
-        package["status"] == "ready"
-        for package in packages.values()
+    render_company_analysis_controls(
+        packages=packages,
+        analyses=st.session_state.group_analyses,
+        analyze_group=calculate_group_analysis,
+        safe_key=safe_key,
     )
 
-    st.success(
-        f"{len(packages):,} group(s) detected. "
-        f"{ready_count:,} contract(s) ready for analysis."
+    render_group_sections(
+        packages=packages,
+        analyses=st.session_state.group_analyses,
+        analyze_group=calculate_group_analysis,
+        report_builder=build_excel_report,
+        safe_key=safe_key,
     )
-
-    ready_groups = [
-        group_number
-        for group_number, package in packages.items()
-        if package["status"] == "ready"
-    ]
-
-    company_groups = {}
-
-    for group_number in ready_groups:
-        company_name = packages[group_number]["contract"]["company"]
-        company_groups.setdefault(company_name, []).append(group_number)
-
-    st.subheader("Analyze by Company")
-
-    st.caption(
-        "Choose one, several, or all Group Numbers for each company. "
-        "Each group is analyzed independently and keeps its own Excel report."
-    )
-
-    for company_name, company_group_numbers in company_groups.items():
-
-        company_key = safe_key(company_name)
-
-        with st.container(border=True):
-
-            st.markdown(f"### {company_name}")
-
-            selected_groups = st.multiselect(
-                "Group Numbers to analyze",
-                options=company_group_numbers,
-                default=company_group_numbers,
-                key=f"selected_groups_{company_key}",
-            )
-
-            batch_col1, batch_col2, batch_space = st.columns(
-                [1.5, 1.25, 3.25]
-            )
-
-            with batch_col1:
-                analyze_selected = st.button(
-                    "Analyze Selected Groups",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=not selected_groups,
-                    key=f"analyze_selected_{company_key}",
-                )
-
-            with batch_col2:
-                analyze_all = st.button(
-                    f"Analyze All {len(company_group_numbers)} Groups",
-                    use_container_width=True,
-                    key=f"analyze_all_{company_key}",
-                )
-
-            if analyze_selected or analyze_all:
-
-                groups_to_run = (
-                    company_group_numbers
-                    if analyze_all
-                    else selected_groups
-                )
-
-                completed = 0
-                errors = []
-
-                with st.spinner(
-                    f"Analyzing {len(groups_to_run)} group(s) "
-                    f"for {company_name}..."
-                ):
-                    for selected_group in groups_to_run:
-                        try:
-                            st.session_state.group_analyses[
-                                selected_group
-                            ] = calculate_group_analysis(
-                                selected_group
-                            )
-                            completed += 1
-                        except Exception as exc:
-                            st.session_state.group_analyses.pop(
-                                selected_group,
-                                None,
-                            )
-                            errors.append(
-                                f"Group {selected_group}: {exc}"
-                            )
-
-                if completed:
-                    st.success(
-                        f"{completed} group(s) analyzed successfully "
-                        f"for {company_name}."
-                    )
-
-                for error_message in errors:
-                    st.error(error_message)
-
-    st.divider()
-    st.subheader("Group Details and Separate Reports")
-
-    for group_number, package in packages.items():
-
-        if package["status"] != "ready":
-
-            with st.expander(
-                f"Group {group_number} — Contract not available",
-                expanded=True,
-            ):
-                st.error(package["error"])
-
-            continue
-
-        contract = package["contract"]
-        group_raw = package["raw_claims"]
-        group_key = safe_key(group_number)
-
-        title = (
-            f"{contract['company']} — "
-            f"Group {group_number}"
-        )
-
-        with st.expander(title, expanded=True):
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            col1.metric(
-                "Company",
-                contract["company"],
-            )
-
-            col2.metric(
-                "Group Number",
-                contract["group_number"],
-            )
-
-            col3.metric(
-                "Contract Deductible",
-                (
-                    f"${contract['deductible']:,.2f}"
-                    if contract.get("deductible") is not None
-                    else "Pending"
-                ),
-            )
-
-            col4.metric(
-                "Maximum Liability",
-                (
-                    f"${contract['maximum_liability']:,.2f}"
-                    if contract.get("maximum_liability") is not None
-                    else "Pending"
-                ),
-            )
-
-            st.subheader("Contract Information")
-
-            st.write(
-                "**Covered Benefits:** "
-                + ", ".join(
-                    contract.get("covered_benefits", [])
-                )
-            )
-
-            # -------------------------------------------------
-            # BENEFIT VALIDATION FOR THIS GROUP ONLY
-            # -------------------------------------------------
-
-            uploaded_benefits = sorted(
-                group_raw["Benefit"]
-                .dropna()
-                .unique()
-                .tolist()
-            )
-
-            required_benefits = set(
-                contract.get("covered_benefits", [])
-            )
-
-            uploaded_set = set(uploaded_benefits)
-
-            missing_benefits = sorted(
-                required_benefits - uploaded_set
-            )
-
-            noncovered_uploaded = sorted(
-                uploaded_set - required_benefits
-            )
-
-            if missing_benefits:
-                st.warning(
-                    "Covered claim files not detected: "
-                    + ", ".join(missing_benefits)
-                )
-            else:
-                st.info(
-                    "All configured covered benefits were detected."
-                )
-
-            if noncovered_uploaded:
-                st.warning(
-                    "Uploaded benefit types not covered by this contract: "
-                    + ", ".join(noncovered_uploaded)
-                    + ". They will be excluded from this group's analysis."
-                )
-
-            # -------------------------------------------------
-            # LASERS AND EXCLUDED MEMBERS
-            # -------------------------------------------------
-
-            member_rules = contract.get("member_rules", {})
-
-            laser_rows = []
-            excluded_rows = []
-
-            for member_id, rule in member_rules.items():
-
-                if rule.get("type") == "laser":
-                    laser_rows.append(
-                        {
-                            "Member ID": member_id,
-                            "Laser Deductible": rule["deductible"],
-                        }
-                    )
-
-                elif rule.get("type") == "excluded":
-                    excluded_rows.append(
-                        {
-                            "Member ID": member_id,
-                            "Rule": "No Coverage",
-                        }
-                    )
-
-            left, right = st.columns(2)
-
-            with left:
-
-                st.markdown("#### Laser Members")
-
-                if laser_rows:
-                    st.dataframe(
-                        pd.DataFrame(laser_rows),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "Laser Deductible":
-                            st.column_config.NumberColumn(
-                                format="$%.2f"
-                            )
-                        },
-                    )
-                else:
-                    st.write("None")
-
-            with right:
-
-                st.markdown("#### Excluded Members")
-
-                if excluded_rows:
-                    st.dataframe(
-                        pd.DataFrame(excluded_rows),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.write("None")
-
-            if contract.get("notes"):
-                st.warning(contract["notes"])
-
-            # -------------------------------------------------
-            # INDEPENDENT ANALYSIS OPTIONS
-            # -------------------------------------------------
-
-            with st.container(border=True):
-
-                st.subheader("Analysis Options")
-
-                alternative_text = st.text_input(
-                    "Optional Alternative Deductible",
-                    placeholder=(
-                        "Leave blank to use the contract deductible"
-                    ),
-                    help="Enter numbers only, for example 75000.",
-                    key=f"alternative_{group_key}",
-                )
-
-                laser_mode = st.radio(
-                    "When an alternative deductible is entered:",
-                    options=[
-                        "Keep contract lasers",
-                        (
-                            "Replace all deductibles, "
-                            "including lasers"
-                        ),
-                    ],
-                    horizontal=True,
-                    key=f"laser_mode_{group_key}",
-                )
-
-                run_final = st.button(
-                    f"Run Analysis for Group {group_number}",
-                    type="primary",
-                    use_container_width=False,
-                    key=f"run_{group_key}",
-                )
-
-            # -------------------------------------------------
-            # FINAL CALCULATION FOR THIS GROUP
-            # -------------------------------------------------
-
-            if run_final:
-
-                try:
-
-                    alternative = None
-
-                    if alternative_text.strip():
-
-                        cleaned = (
-                            alternative_text
-                            .replace("$", "")
-                            .replace(",", "")
-                            .strip()
-                        )
-
-                        alternative = float(cleaned)
-
-                        if alternative < 0:
-                            raise ValueError(
-                                "The Alternative Deductible "
-                                "cannot be negative."
-                            )
-
-                    analysis = calculate_group_analysis(
-                        group_number,
-                        alternative_deductible=alternative,
-                        replace_lasers=(
-                            laser_mode
-                            == (
-                                "Replace all deductibles, "
-                                "including lasers"
-                            )
-                        ),
-                    )
-
-                    st.session_state.group_analyses[
-                        group_number
-                    ] = analysis
-
-                except Exception as exc:
-
-                    st.session_state.group_analyses.pop(
-                        group_number,
-                        None,
-                    )
-
-                    st.error(str(exc))
-
-            # -------------------------------------------------
-            # ANALYSIS RESULTS FOR THIS GROUP
-            # -------------------------------------------------
-
-            analysis = st.session_state.group_analyses.get(
-                group_number
-            )
-
-            if analysis is not None:
-
-                st.divider()
-                st.subheader("Analysis Results")
-
-                total_claims = float(
-                    analysis["Total Claims"].sum()
-                )
-
-                redbridge_liability = float(
-                    analysis["Redbridge Liability"].sum()
-                )
-
-                large_claim_count = int(
-                    (
-                        analysis["Redbridge Liability"] > 0
-                    ).sum()
-                )
-
-                excluded_count = int(
-                    (
-                        analysis["Coverage Status"]
-                        == "Excluded - No Coverage"
-                    ).sum()
-                )
-
-                c1, c2, c3, c4 = st.columns(4)
-
-                c1.metric(
-                    "Total Claims",
-                    f"${total_claims:,.2f}",
-                )
-
-                c2.metric(
-                    "Redbridge Liability",
-                    f"${redbridge_liability:,.2f}",
-                )
-
-                c3.metric(
-                    "Members Above Deductible",
-                    f"{large_claim_count:,}",
-                )
-
-                c4.metric(
-                    "Excluded Members Found",
-                    f"{excluded_count:,}",
-                )
-
-                st.dataframe(
-                    analysis,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "MED":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "RX":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "DENT":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        # Kept for compatibility with older reports.
-                        "DENTAL":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "VISION":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "Total Claims":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "Contract Laser":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "Applicable Deductible":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "Maximum Redbridge Liability":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "Redbridge Liability":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "Above Coverage Limit":
-                        st.column_config.NumberColumn(
-                            format="$%.2f"
-                        ),
-                        "Exceeds Deductible":
-                        st.column_config.CheckboxColumn(),
-                    },
-                )
-
-                # ---------------------------------------------
-                # EXCEL DOWNLOAD FOR THIS GROUP
-                # ---------------------------------------------
-
-                report_bytes = build_excel_report(
-                    analysis=analysis,
-                    raw_claims=group_raw,
-                    contract=contract,
-                )
-
-                safe_company = safe_key(
-                    contract["company"]
-                )
-
-                filename = (
-                    f"{safe_company}_"
-                    f"{contract['group_number']}_"
-                    f"{contract['policy_year']}_"
-                    f"Large_Claims.xlsx"
-                )
-
-                st.download_button(
-                    f"Download Excel Report — {contract['company']}",
-                    data=report_bytes,
-                    file_name=filename,
-                    mime=(
-                        "application/vnd.openxmlformats-"
-                        "officedocument.spreadsheetml.sheet"
-                    ),
-                    use_container_width=False,
-                    key=f"download_{group_key}",
-                )
