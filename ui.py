@@ -29,15 +29,14 @@ def apply_global_styles() -> None:
                 margin-bottom: 1.8rem;
             }
 
-            [data-testid="stButton"],
-            [data-testid="stDownloadButton"] {
+            div.stButton,
+            div.stDownloadButton {
                 display: flex;
                 justify-content: center;
-                width: 100%;
             }
 
-            [data-testid="stButton"] > button,
-            [data-testid="stDownloadButton"] > button {
+            div.stButton > button,
+            div.stDownloadButton > button {
                 width: auto !important;
                 min-width: 180px;
                 padding-left: 1.5rem;
