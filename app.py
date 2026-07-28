@@ -17,12 +17,60 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("Redbridge Large Claims Analyzer")
+st.markdown(
+    """
+    <style>
+        .block-container {
+            max-width: 1180px;
+            padding-top: 2.5rem;
+            padding-bottom: 3rem;
+        }
 
-st.caption(
-    "Upload claim workbooks, enter the policy year, consolidate claims "
-    "by Member ID, and calculate Redbridge liability independently "
-    "for each company/group."
+        .app-title {
+            text-align: center;
+            font-size: 2.35rem;
+            font-weight: 750;
+            margin-bottom: 0.35rem;
+        }
+
+        .app-subtitle {
+            text-align: center;
+            color: #6b7280;
+            font-size: 0.95rem;
+            margin-bottom: 1.8rem;
+        }
+
+        div.stButton,
+        div.stDownloadButton {
+            display: flex;
+            justify-content: center;
+        }
+
+        div.stButton > button,
+        div.stDownloadButton > button {
+            width: auto !important;
+            min-width: 180px;
+            padding-left: 1.5rem;
+            padding-right: 1.5rem;
+        }
+
+        [data-testid="stFileUploader"] {
+            max-width: 100%;
+        }
+
+        [data-testid="stMetric"] {
+            text-align: center;
+        }
+    </style>
+
+    <div class="app-title">Redbridge Large Claims Analyzer</div>
+    <div class="app-subtitle">
+        Upload claim workbooks, enter the policy year, consolidate claims by
+        Member ID, and calculate Redbridge liability independently for each
+        company and group.
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -112,26 +160,37 @@ if "group_analyses" not in st.session_state:
 # FILE UPLOAD AND POLICY YEAR
 # ---------------------------------------------------------
 
-with st.container(border=True):
+left_space, center_column, right_space = st.columns(
+    [1, 4, 1]
+)
 
-    uploaded_files = st.file_uploader(
-        "Upload claim workbooks",
-        type=["xlsx", "xls"],
-        accept_multiple_files=True,
-        help="Each workbook must contain a sheet named 'data'.",
-    )
+with center_column:
 
-    policy_year = st.text_input(
-        "Policy Year",
-        placeholder="Example: 2025",
-        max_chars=4,
-    )
+    with st.container(border=True):
 
-    analyze_clicked = st.button(
-        "Analyze",
-        type="primary",
-        use_container_width=True,
-    )
+        uploaded_files = st.file_uploader(
+            "Upload claim workbooks",
+            type=["xlsx", "xls"],
+            accept_multiple_files=True,
+            help="Each workbook must contain a sheet named 'data'.",
+        )
+
+        year_left, year_center, year_right = st.columns(
+            [1, 2, 1]
+        )
+
+        with year_center:
+            policy_year = st.text_input(
+                "Policy Year",
+                placeholder="Example: 2025",
+                max_chars=4,
+            )
+
+        analyze_clicked = st.button(
+            "Analyze",
+            type="primary",
+            use_container_width=False,
+        )
 
 
 # ---------------------------------------------------------
@@ -453,7 +512,7 @@ if packages:
                 run_final = st.button(
                     f"Run Analysis for {contract['company']}",
                     type="primary",
-                    use_container_width=True,
+                    use_container_width=False,
                     key=f"run_{group_key}",
                 )
 
@@ -668,6 +727,6 @@ if packages:
                         "application/vnd.openxmlformats-"
                         "officedocument.spreadsheetml.sheet"
                     ),
-                    use_container_width=True,
+                    use_container_width=False,
                     key=f"download_{group_key}",
                 )
