@@ -101,9 +101,10 @@ def render_upload_panel():
                 ),
             )
 
-            year_label, year_input, analyze_column, row_space = st.columns(
-                [1.05, 1.15, 1.15, 2.65],
+            year_label, year_input, spacer, analyze_column, row_space = st.columns(
+                [1.05, 1.10, 0.20, 1.25, 2.40],
                 vertical_alignment="center",
+                
             )
 
             with year_label:
