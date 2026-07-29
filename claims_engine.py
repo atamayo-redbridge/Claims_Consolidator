@@ -17,6 +17,13 @@ BENEFIT_ALIASES = {
     "VIS": "VISION",
 }
 
+NAME_BENEFIT_PRIORITY = {
+    "MED": 1,
+    "RX": 2,
+    "DENT": 3,
+    "VISION": 4,
+}
+
 
 def _normalize_benefit(value: object) -> str:
     """Keep benefit names consistent across the analyzer."""
@@ -40,13 +47,102 @@ def _normalize_member_id(value: object) -> str:
     return text
 
 
+def _clean_name(value: object) -> str:
+    """Return a clean name or an empty string."""
+    if pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+
+    if text.lower() in {"nan", "none", "null"}:
+        return ""
+
+    return text
+
+
+def _first_nonblank(series: pd.Series) -> str:
+    """Return the first nonblank value from an already prioritized series."""
+    for value in series:
+        cleaned = _clean_name(value)
+        if cleaned:
+            return cleaned
+
+    return ""
+
+
+def _select_preferred_names(claims: pd.DataFrame) -> pd.DataFrame:
+    """
+    Select member names using this priority:
+
+    1. MED
+    2. RX
+    3. DENT
+    4. VISION or any other benefit
+
+    First Name and Last Name are each taken from the first nonblank value
+    according to that priority. If no valid name exists, the field stays blank.
+    """
+    name_claims = claims[
+        [
+            "Group Number",
+            "Member ID",
+            "First Name",
+            "Last Name",
+            "Benefit",
+        ]
+    ].copy()
+
+    name_claims["First Name"] = name_claims[
+        "First Name"
+    ].apply(_clean_name)
+
+    name_claims["Last Name"] = name_claims[
+        "Last Name"
+    ].apply(_clean_name)
+
+    name_claims["_Benefit Priority"] = (
+        name_claims["Benefit"]
+        .map(NAME_BENEFIT_PRIORITY)
+        .fillna(99)
+        .astype(int)
+    )
+
+    name_claims["_Original Order"] = range(len(name_claims))
+
+    name_claims = name_claims.sort_values(
+        [
+            "Group Number",
+            "Member ID",
+            "_Benefit Priority",
+            "_Original Order",
+        ],
+        kind="stable",
+    )
+
+    names = (
+        name_claims.groupby(
+            ["Group Number", "Member ID"],
+            as_index=False,
+            sort=False,
+        )
+        .agg(
+            {
+                "First Name": _first_nonblank,
+                "Last Name": _first_nonblank,
+            }
+        )
+    )
+
+    return names
+
+
 def consolidate_claims(raw_claims: pd.DataFrame) -> pd.DataFrame:
     """
     Consolidate claims by Group Number and Member ID.
 
-    This function supports data containing one or several groups. The new
-    app.py normally sends one group at a time, but retaining Group Number
-    in the grouping prevents claims from different companies from mixing.
+    Claim amounts are summed across all benefit files. Member names are selected
+    using MED first, then RX, then DENT. If no valid name exists in those files,
+    the name remains blank.
     """
     required_columns = {
         "Group Number",
@@ -82,6 +178,14 @@ def consolidate_claims(raw_claims: pd.DataFrame) -> pd.DataFrame:
         "Benefit"
     ].apply(_normalize_benefit)
 
+    claims["First Name"] = claims[
+        "First Name"
+    ].apply(_clean_name)
+
+    claims["Last Name"] = claims[
+        "Last Name"
+    ].apply(_clean_name)
+
     claims["Claim Amount"] = pd.to_numeric(
         claims["Claim Amount"],
         errors="coerce",
@@ -98,18 +202,7 @@ def consolidate_claims(raw_claims: pd.DataFrame) -> pd.DataFrame:
             "No usable claims remained after consolidation cleaning."
         )
 
-    names = (
-        claims.groupby(
-            ["Group Number", "Member ID"],
-            as_index=False,
-        )
-        .agg(
-            {
-                "First Name": "first",
-                "Last Name": "first",
-            }
-        )
-    )
+    names = _select_preferred_names(claims)
 
     totals = (
         claims.pivot_table(
@@ -140,6 +233,14 @@ def consolidate_claims(raw_claims: pd.DataFrame) -> pd.DataFrame:
     for benefit in standard_benefits:
         if benefit not in result.columns:
             result[benefit] = 0.0
+
+    result["First Name"] = result[
+        "First Name"
+    ].fillna("").apply(_clean_name)
+
+    result["Last Name"] = result[
+        "Last Name"
+    ].fillna("").apply(_clean_name)
 
     identification_columns = {
         "Group Number",
@@ -268,7 +369,6 @@ def apply_contract_rules(
     rows = []
 
     for _, row in consolidated.iterrows():
-
         item = row.to_dict()
 
         member = _normalize_member_id(
@@ -291,16 +391,13 @@ def apply_contract_rules(
         contract_laser = None
 
         if rule_type == "excluded":
-
             applicable = None
             status = "Excluded - No Coverage"
             liability = 0.0
             above = 0.0
 
         else:
-
             if rule_type == "laser":
-
                 contract_laser = float(
                     rule["deductible"]
                 )
@@ -314,7 +411,6 @@ def apply_contract_rules(
                 status = "Laser"
 
             else:
-
                 applicable = standard
                 status = "Standard"
 
