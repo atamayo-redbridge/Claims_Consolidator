@@ -10,32 +10,35 @@ import pandas as pd
 
 GROUP_CANDIDATES = [
     "GROUP NUMBER",
+    "GROUPNUMBER",
     "GRPNUM",
     "GROUP",
     "GROUP NO",
     "GROUP #",
-    "COMPNO",
-    "COMP NO",
-    "COMPANY NUMBER",
+    "COMPANY GROUP NUMBER",
 ]
 
 MEMBER_CANDIDATES = [
     "MEMBER ID NUMBER",
+    "MEMBERIDNUMBER",
     "MEMBER ID",
     "MEMBERID",
     "MEMBNO",
     "MEMBER NUMBER",
     "MEMBER NO",
     "CERTIFICATE NUMBER",
+    "CERTIFICATE NO",
 ]
 
 AMOUNT_CANDIDATES = [
     "AMOUNT PAID",
     "PAID AMOUNT",
     "COMPUTED",
+    "PAID CLAIM AMOUNT",
+    "TOTAL PAID",
     "CLAIM AMOUNT",
     "NET PAID",
-    "TOTAL PAID",
+    "PAYMENT AMOUNT",
     "AMOUNT",
     "PAID",
 ]
@@ -43,55 +46,97 @@ AMOUNT_CANDIDATES = [
 FIRST_NAME_CANDIDATES = [
     "MEMB FIRST NAME",
     "MEMBER FIRST NAME",
+    "MEMBER FIRSTNAME",
+    "PATIENT FIRST NAME",
+    "SUBSCRIBER FIRST NAME",
     "FIRST NAME",
+    "FIRSTNAME",
     "FSTNAM",
-    "FIRST",
+    "FNAME",
 ]
 
 LAST_NAME_CANDIDATES = [
-    "MEMB LAS NAME",
     "MEMB LAST NAME",
+    "MEMB LAS NAME",
     "MEMBER LAST NAME",
+    "MEMBER LASTNAME",
+    "PATIENT LAST NAME",
+    "SUBSCRIBER LAST NAME",
     "LAST NAME",
+    "LASTNAME",
     "LSTNAM",
-    "LAST",
+    "LNAME",
 ]
 
 
-def _clean(value):
-    return re.sub(r"\s+", " ", str(value).strip().upper())
+def _clean_header(value: object) -> str:
+    """
+    Normalize a column header for reliable matching.
+
+    Example:
+        "Memb First_Name" -> "MEMBFIRSTNAME"
+    """
+    if pd.isna(value):
+        return ""
+
+    return re.sub(
+        r"[^A-Z0-9]+",
+        "",
+        str(value).strip().upper(),
+    )
 
 
-def _find(columns, candidates):
-    normalized = {_clean(column): column for column in columns}
+def _find_column(columns, candidates):
+    """
+    Find a column safely.
+
+    Exact normalized matches are preferred. Limited fallback matching is used
+    only for longer candidate names to avoid selecting provider-name columns
+    such as Fstnam2 or Lstnam2.
+    """
+    normalized_columns = {
+        _clean_header(column): column
+        for column in columns
+        if _clean_header(column)
+    }
 
     for candidate in candidates:
-        normalized_candidate = _clean(candidate)
+        normalized_candidate = _clean_header(candidate)
 
-        if normalized_candidate in normalized:
-            return normalized[normalized_candidate]
+        if normalized_candidate in normalized_columns:
+            return normalized_columns[normalized_candidate]
 
-    for normalized_column, original_column in normalized.items():
-        for candidate in candidates:
-            normalized_candidate = _clean(candidate)
+    for candidate in candidates:
+        normalized_candidate = _clean_header(candidate)
 
-            if (
-                normalized_candidate in normalized_column
-                or normalized_column in normalized_candidate
-            ):
-                return original_column
+        if len(normalized_candidate) < 8:
+            continue
+
+        matches = [
+            original
+            for normalized, original in normalized_columns.items()
+            if normalized.startswith(normalized_candidate)
+            or normalized_candidate.startswith(normalized)
+        ]
+
+        if len(matches) == 1:
+            return matches[0]
 
     return None
 
 
-def normalize_identifier(value, append_00_to_9_digits=False):
+def normalize_identifier(
+    value: object,
+    append_00_to_9_digits: bool = False,
+) -> str:
+    """Normalize group and member identifiers read from Excel."""
     if pd.isna(value):
         return ""
 
     text = str(value).strip()
 
     if re.fullmatch(r"\d+\.0+", text):
-        text = text.split(".")[0]
+        text = text.split(".", 1)[0]
 
     digits = re.sub(r"\D", "", text)
 
@@ -101,7 +146,28 @@ def normalize_identifier(value, append_00_to_9_digits=False):
     return digits
 
 
-def _read_data_sheet(uploaded_file: BinaryIO):
+def _clean_name(value: object) -> str:
+    """Return a clean member name or an empty string."""
+    if pd.isna(value):
+        return ""
+
+    text = re.sub(r"\s+", " ", str(value).strip())
+
+    if text.lower() in {
+        "",
+        "nan",
+        "none",
+        "null",
+        "(blank)",
+        "blank",
+    }:
+        return ""
+
+    return text
+
+
+def _read_data_sheet(uploaded_file: BinaryIO) -> pd.DataFrame:
+    """Read the worksheet named data from an uploaded workbook."""
     raw = (
         uploaded_file.getvalue()
         if hasattr(uploaded_file, "getvalue")
@@ -122,7 +188,7 @@ def _read_data_sheet(uploaded_file: BinaryIO):
     if sheet is None:
         raise ValueError(
             f"{uploaded_file.name}: no sheet named 'data'. "
-            f"Available: {', '.join(excel.sheet_names)}"
+            f"Available sheets: {', '.join(excel.sheet_names)}"
         )
 
     return pd.read_excel(
@@ -131,31 +197,35 @@ def _read_data_sheet(uploaded_file: BinaryIO):
     )
 
 
-def infer_benefit_type(filename, columns):
+def infer_benefit_type(filename, columns) -> str:
     """
-    Detect the claim benefit from the file name or column names.
+    Detect the claim benefit from the filename and column names.
 
-    Dental is standardized as DENT because that is how the source
-    workbooks are named and how the analyzer will identify it.
+    Dental is standardized as DENT.
     """
     name = Path(filename).stem.upper()
-    joined = " ".join(_clean(column) for column in columns)
+    joined = " ".join(str(column).upper() for column in columns)
 
     if (
         "DENTAL" in name
         or re.search(r"(^|[^A-Z])DENT([^A-Z]|$)", name)
         or "DENTAL" in joined
-        or re.search(r"(^|[^A-Z])DENT([^A-Z]|$)", joined)
     ):
         return "DENT"
 
-    if "VISION" in name or "VISION" in joined:
+    if (
+        "VISION" in name
+        or re.search(r"(^|[^A-Z])VIS([^A-Z]|$)", name)
+        or "VISION" in joined
+    ):
         return "VISION"
 
     if (
         re.search(r"(^|[^A-Z])RX([^A-Z]|$)", name)
-        or "PRESCRIPTION" in joined
+        or "PRESCRIPTION" in name
         or "PHARM" in name
+        or "DRUG NAME" in joined
+        or "PRESCRIPTION" in joined
         or "PHARM" in joined
     ):
         return "RX"
@@ -163,7 +233,8 @@ def infer_benefit_type(filename, columns):
     return "MED"
 
 
-def read_claim_file(uploaded_file):
+def read_claim_file(uploaded_file) -> pd.DataFrame:
+    """Read and standardize one claim workbook."""
     df = _read_data_sheet(uploaded_file)
 
     if df.empty:
@@ -173,27 +244,23 @@ def read_claim_file(uploaded_file):
 
     columns = list(df.columns)
 
-    group_col = _find(
+    group_col = _find_column(
         columns,
         GROUP_CANDIDATES,
     )
-
-    member_col = _find(
+    member_col = _find_column(
         columns,
         MEMBER_CANDIDATES,
     )
-
-    amount_col = _find(
+    amount_col = _find_column(
         columns,
         AMOUNT_CANDIDATES,
     )
-
-    first_col = _find(
+    first_col = _find_column(
         columns,
         FIRST_NAME_CANDIDATES,
     )
-
-    last_col = _find(
+    last_col = _find_column(
         columns,
         LAST_NAME_CANDIDATES,
     )
@@ -205,17 +272,17 @@ def read_claim_file(uploaded_file):
             ("Member ID", member_col),
             ("Claim Amount", amount_col),
         ]
-        if not column
+        if column is None
     ]
 
     if missing:
         raise ValueError(
             f"{uploaded_file.name}: could not detect "
             f"{', '.join(missing)}. "
-            f"Columns: {', '.join(map(str, columns))}"
+            f"Columns found: {', '.join(map(str, columns))}"
         )
 
-    output = pd.DataFrame()
+    output = pd.DataFrame(index=df.index)
 
     output["Group Number"] = df[group_col].map(
         normalize_identifier
@@ -229,20 +296,14 @@ def read_claim_file(uploaded_file):
     )
 
     output["First Name"] = (
-        df[first_col]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        if first_col
+        df[first_col].map(_clean_name)
+        if first_col is not None
         else ""
     )
 
     output["Last Name"] = (
-        df[last_col]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        if last_col
+        df[last_col].map(_clean_name)
+        if last_col is not None
         else ""
     )
 
@@ -266,19 +327,19 @@ def read_claim_file(uploaded_file):
 
     if output.empty:
         raise ValueError(
-            f"{uploaded_file.name}: no usable claim rows "
-            "remained after cleaning."
+            f"{uploaded_file.name}: no usable claim rows remained "
+            "after cleaning."
         )
 
-    return output
+    return output.reset_index(drop=True)
 
 
-def read_all_claim_files(uploaded_files):
+def read_all_claim_files(uploaded_files) -> pd.DataFrame:
     """
     Read all uploaded claim workbooks.
 
-    Multiple Group Numbers are allowed. The app.py file is responsible
-    for separating and analyzing each group independently.
+    Multiple companies and Group Numbers are allowed. app.py separates them
+    and analyzes each group independently.
     """
     if not uploaded_files:
         raise ValueError(
