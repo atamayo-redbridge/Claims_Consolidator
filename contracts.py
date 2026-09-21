@@ -114,7 +114,7 @@ CONTRACTS: dict[str, dict[str, dict[str, Any]]] = {
             "company": "FENWAL INTERNATIONAL INC",
             "deductible": 125000,
             "maximum_liability": 875000,
-            "covered_benefits": ["MED", "RX"],
+            "covered_benefits": ["MED", "DENT"],
             "member_rules": {},
             "notes": (
                 "A 2025 laser exists, but the Member ID "
@@ -125,7 +125,7 @@ CONTRACTS: dict[str, dict[str, dict[str, Any]]] = {
             "company": "FENWAL INTERNATIONAL INC",
             "deductible": 125000,
             "maximum_liability": 875000,
-            "covered_benefits": ["MED", "RX"],
+            "covered_benefits": ["MED", "DENT"],
             "member_rules": {
                 "23414805502": {
                     "type": "excluded",
